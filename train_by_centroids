@@ -1,8 +1,8 @@
 
-
 #*****************************训练词向量*********************************
 '''载入数据'''
 import pandas as pd
+import numpy as np 
 
 train = pd.read_csv( "labeledTrainData.tsv", header=0, 
  delimiter="\t", quoting=3 )  # 载入有标记的训练数据
@@ -93,102 +93,106 @@ model.save(model_name)
 '''
 
 #******************************************************************
-'''计算训练集和测试集的平均词向量，注意此时需要去停用词（训练词向量时不需要），
-避免噪声影响'''
-import numpy as np 
-
 #加载之前训练好的词向量模型
 from gensim.models import Word2Vec
 model = Word2Vec.load("300features_40minwords_10context")
 
-#输出评论的词向量
-def makeFeatureVec(words, model, num_features):
-    '''
-    Parameters
-    ----------
-    words : 评论中的一句话
-    model : 训练好的词向量模型
-    num_features : 词向量维数
+#*******************************K-means聚类***************************
+#注释掉聚类过程，省的反复训练，下面会加载训练结果
+'''
+from sklearn.cluster import KMeans
+import time
+
+start = time.time() # 开始时间
+
+#设置质心数量，约每簇五个单词
+word_vectors = model.wv.syn0
+num_clusters = word_vectors.shape[0] // 5
+
+# 初始化k-means
+kmeans_clustering = KMeans( n_clusters = num_clusters )
+idx = kmeans_clustering.fit_predict( word_vectors )
+
+# 计算耗时
+end = time.time()
+elapsed = end - start
+print ("Time taken for K Means clustering: ", elapsed, "seconds.")
+
+# 创建一个‘单词：簇编号’的dict                                                                                           
+word_centroid_map = dict(zip( model.index2word, idx ))
+
+#保存训练好的dict
+np.save('word_centroid_map.npy', word_centroid_map) 
+'''
+
+#**************************依据每个簇构建评论的向量********************************
+#加载聚类结果的dict
+word_centroid_map = np.load('word_centroid_map.npy',allow_pickle=True).item()
+
+#构建每个评论的向量
+def create_bag_of_centroids( wordlist, word_centroid_map ):
+    #以簇的数量作为向量的维数
+    num_centroids = max( word_centroid_map.values() ) + 1
     
-    Returns
-    -------
-    featureVec : 平均词向量
-    '''
-    # 初始化featureVec
-    featureVec = np.zeros((num_features,),dtype="float32")
-
-    # index2word_set是包含所有词向量对应词汇的列表，将其转化为set以加快匹配速度
-    index2word_set = set(model.wv.index2word)
-
-    #遍历评论中每一个词汇，若在模型中，则将其词向量相加
-    nwords = 0.
-    for word in words:
-        if word in index2word_set: 
-            nwords = nwords + 1.
-            featureVec = np.add(featureVec,model[word])
-
-    # 将词向量之和平均（取整）
-    featureVec = np.divide(featureVec,nwords)
-    return featureVec
-
-
-def getAvgFeatureVecs(reviews, model, num_features):
-    '''
-    Parameters
-    ----------
-    reviews : 评论，二维列表。按句分割，每句再分割为词
-    model : 训练好的词向量模型
-    num_features : 词向量维数
+    #预先声明评论的向量
+    bag_of_centroids = np.zeros( num_centroids, dtype="float32" )
     
-    Returns
-    -------
-    reviewFeatureVecs : 评论的平均词向量，二维数组
-    '''
-
-    #初始化返回值为二位数组
-    reviewFeatureVecs = np.zeros((len(reviews),num_features),dtype="float32")
+    #遍历评论中每一个词，判断该词的簇，并在向量中对应簇的计数加一
+    for word in wordlist:
+        if word in word_centroid_map:
+            index = word_centroid_map[word]
+            bag_of_centroids[index] += 1
     
-    #初始化一个计数
-    counter = 0.
-    # 遍历reviews中每一句话（review）
-    for review in reviews:
-       # 每1000次循环检查打印一条状态信息
-       if counter%1000. == 0.:
-           print ("Review %d of %d" % (counter, len(reviews)))
+    return bag_of_centroids
 
-       #调用makeFeatureVec
-       reviewFeatureVecs[counter] = makeFeatureVec(review, model, num_features)
+#簇的数量
+word_vectors = model.wv.syn0
+num_clusters = word_vectors.shape[0] // 5
 
-       # 递增计数
-       counter = counter + 1.
-    return reviewFeatureVecs
-
-#清洗（注意去停用词）和计算训练集的平均向量
+#预先声明好训练数据train_by_centroids
+train_by_centroids = np.zeros( (train["review"].size, num_clusters), \
+    dtype="float32" )
+       
+#清洗（注意去停用词）训练集
 clean_train_reviews = []
 for review in train["review"]:
     clean_train_reviews.append( review_to_wordlist( review, \
         remove_stopwords = True ))
 
-trainDataVecs = getAvgFeatureVecs( clean_train_reviews, model, 300)
+#根据簇，将训练集中每一个评论转化为向量     
+counter = 0
+for review in clean_train_reviews:
+    train_by_centroids[counter] = create_bag_of_centroids( review, \
+        word_centroid_map )
+    counter += 1
 
-#清洗（注意去停用词）和计算测试集的平均向量
+#预先声明好测试数据train_by_centroids
+test_by_centroids = np.zeros( (test["review"].size, num_clusters), \
+    dtype="float32" )
+
+#清洗（注意去停用词）测试集
 clean_test_reviews = []
 for review in test["review"]:
     clean_test_reviews.append( review_to_wordlist( review, \
         remove_stopwords=True ))
 
-testDataVecs = getAvgFeatureVecs( clean_test_reviews, model, 300)
+#根据簇，将测试集中每一个评论转化为向量
+counter = 0
+for review in clean_test_reviews:
+    test_by_centroids[counter] = create_bag_of_centroids( review, \
+        word_centroid_map )
+    counter += 1
 
 #********************************随机森林分类*****************************
 #使用训练数据训练随机森林
 from sklearn.ensemble import RandomForestClassifier
 forest = RandomForestClassifier( n_estimators = 100 ) #100棵决策树
 
-forest = forest.fit( trainDataVecs, train["sentiment"] )
+forest = forest.fit(train_by_centroids, train["sentiment"] )
 
 #预测测试集
-result = forest.predict( testDataVecs )
+result = forest.predict(test_by_centroids)
 
 #写入测试结果
 output = pd.DataFrame( data={"id":test["id"], "sentiment":result} )
-output.to_csv( "Word2Vec_AverageVectors.csv", index=False, quoting=3 )
+output.to_csv( "Word2Vec_clusterVectors.csv", index=False, quoting=3 )
