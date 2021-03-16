@@ -85,7 +85,7 @@ from gensim.models import word2vec
 model = word2vec.Word2Vec(sentences,
                           sg = 0 ,           #架构，0为分层CBOW，1为skip-gram
                           hs = 0 ,           #训练算法，0为分词softmax，1为负采样
-                          workers = 4,       #线程数量
+                          workers=4,       #线程数量
                           size = 300,        #词向量维数
                           min_count = 40,    #最低词频，以现直词汇数量
                           window = 10,       #窗口大小
